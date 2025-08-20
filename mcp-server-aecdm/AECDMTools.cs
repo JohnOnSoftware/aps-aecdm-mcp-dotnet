@@ -16,6 +16,8 @@ using Autodesk.Data.Interface;
 using Autodesk.Data.OpenAPI;
 using System.Text;
 using System.Numerics;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace mcp_server_aecdm.Tools;
 
@@ -316,6 +318,7 @@ public static class AECDMTools
 			Console.WriteLine($"Stack trace: {ex.StackTrace}");
             path = ex.Message;
         }
+
         return path;
     }
 
@@ -325,10 +328,14 @@ public static class AECDMTools
     [McpServerTool, Description("Perform accurate clash detection analysis between selected building elements")]
     public static async Task<string> ClashDetectForElements(
         [Description("Array of element ids to analyze for clashes")] string[] elementIds,
-        [Description("Minimum clash volume threshold in cubic units (default: 0.01 - higher values reduce false positives)")] double clashThreshold = 0.01)
+        [Description("Minimum clash volume threshold in cubic units (default: 0.01 - higher values reduce false positives)")] double clashThreshold = 0.01,
+        [Description("Clearance distance for near-miss detection in units (default: 0.1)")] double clearanceThreshold = 0.1,
+        [Description("Enable parallel processing for large datasets (default: true)")] bool enableParallelProcessing = true)
     {
         var clashResults = new StringBuilder();
         var meshSummary = new StringBuilder();
+        var performanceMetrics = new StringBuilder();
+        var stopwatch = Stopwatch.StartNew();
         
         try
         {
@@ -351,6 +358,7 @@ public static class AECDMTools
 
             // Create element bounding boxes for clash detection analysis
             var elementCollisionData = new List<ElementBoundingBox>();
+            var geometryProcessingTime = stopwatch.ElapsedMilliseconds;
             
             // Process each element and create bounding boxes
             foreach (KeyValuePair<Autodesk.Data.DataModels.Element, IEnumerable<ElementGeometry>> kv in ElementGeomMap)
@@ -368,15 +376,17 @@ public static class AECDMTools
                         
                         try
                         {
-                            // Create bounding box from mesh vertices
-                            var boundingBox = CreateBoundingBoxFromMesh(meshGeometry.Mesh);
+                            // Create bounding box from mesh vertices with enhanced properties
+                            var boundingBox = CreateEnhancedBoundingBoxFromMesh(meshGeometry.Mesh);
                             if (boundingBox != null)
                             {
                                 boundingBox.ElementId = element.Id;
                                 boundingBox.ElementName = GetElementName(element);
+                                boundingBox.AdaptiveTolerance = CalculateAdaptiveTolerance(boundingBox);
                                 elementCollisionData.Add(boundingBox);
                                 
                                 meshSummary.AppendLine($"  - Bounding Box: ({boundingBox.MinX:F2}, {boundingBox.MinY:F2}, {boundingBox.MinZ:F2}) to ({boundingBox.MaxX:F2}, {boundingBox.MaxY:F2}, {boundingBox.MaxZ:F2})");
+                                meshSummary.AppendLine($"  - Volume: {boundingBox.Volume:F6}, Adaptive Tolerance: {boundingBox.AdaptiveTolerance:F6}");
                             }
                         }
                         catch (Exception meshEx)
@@ -391,58 +401,83 @@ public static class AECDMTools
                 }
             }
 
-            // Perform clash detection
-            clashResults.AppendLine("=== CLASH DETECTION RESULTS ===");
+            // Create spatial index for optimized collision detection
+            var spatialIndex = new SpatialIndex(elementCollisionData);
+            var indexingTime = stopwatch.ElapsedMilliseconds - geometryProcessingTime;
+            
+            // Perform enhanced clash detection with spatial optimization
+            var (clashes, clearances, detectionTime) = await PerformEnhancedClashDetection(
+                elementCollisionData, spatialIndex, clashThreshold, clearanceThreshold, enableParallelProcessing);
+            
+            // Generate results
+            clashResults.AppendLine("=== ENHANCED CLASH DETECTION RESULTS ===");
             clashResults.AppendLine($"Total elements analyzed: {elementCollisionData.Count}");
             clashResults.AppendLine($"Clash threshold: {clashThreshold} cubic units");
+            clashResults.AppendLine($"Clearance threshold: {clearanceThreshold} units");
+            clashResults.AppendLine($"Parallel processing: {(enableParallelProcessing ? "Enabled" : "Disabled")}");
             clashResults.AppendLine();
 
-            var clashCount = 0;
-            var totalPairs = 0;
+            var clashCount = clashes.Count;
+            var clearanceCount = clearances.Count;
 
-            // Check each pair of elements for clashes using bounding box overlap analysis
-            for (int i = 0; i < elementCollisionData.Count; i++)
+            // Display clashes
+            foreach (var clash in clashes.OrderByDescending(c => c.IntersectionVolume))
             {
-                for (int j = i + 1; j < elementCollisionData.Count; j++)
+                var clashNum = clashes.IndexOf(clash) + 1;
+                clashResults.AppendLine($"CLASH #{clashNum} - {clash.Severity}:");
+                clashResults.AppendLine($"  Element 1: {clash.Element1Name} (ID: {clash.Element1Id})");
+                clashResults.AppendLine($"  Element 2: {clash.Element2Name} (ID: {clash.Element2Id})");
+                clashResults.AppendLine($"  Details:");
+                clashResults.AppendLine($"    - Type: {clash.ClashType}");
+                clashResults.AppendLine($"    - Severity: {clash.Severity}");
+                clashResults.AppendLine($"    - Intersection Volume: {clash.IntersectionVolume:F6} cubic units");
+                clashResults.AppendLine($"    - Element 1 Overlap: {clash.Element1VolumePercent:F2}% of its volume");
+                clashResults.AppendLine($"    - Element 2 Overlap: {clash.Element2VolumePercent:F2}% of its volume");
+                if (clash.ContactPoints.Any())
                 {
-                    totalPairs++;
-                    var element1 = elementCollisionData[i];
-                    var element2 = elementCollisionData[j];
-
-                    // Perform pure C# collision detection
-                    var clashInfo = DetectBoundingBoxClash(element1, element2, clashThreshold);
-                    if (clashInfo != null)
-                    {
-                        clashCount++;
-                        clashResults.AppendLine($"CLASH #{clashCount}:");
-                        clashResults.AppendLine($"  Element 1: {element1.ElementName} (ID: {element1.ElementId})");
-                        clashResults.AppendLine($"    - Volume: {element1.Volume:F6} cubic units");
-                        clashResults.AppendLine($"    - Bounding Box: ({element1.MinX:F2}, {element1.MinY:F2}, {element1.MinZ:F2}) to ({element1.MaxX:F2}, {element1.MaxY:F2}, {element1.MaxZ:F2})");
-                        clashResults.AppendLine($"  Element 2: {element2.ElementName} (ID: {element2.ElementId})");
-                        clashResults.AppendLine($"    - Volume: {element2.Volume:F6} cubic units");
-                        clashResults.AppendLine($"    - Bounding Box: ({element2.MinX:F2}, {element2.MinY:F2}, {element2.MinZ:F2}) to ({element2.MaxX:F2}, {element2.MaxY:F2}, {element2.MaxZ:F2})");
-                        clashResults.AppendLine($"  Clash Details:");
-                        clashResults.AppendLine($"    - Type: {clashInfo.ClashType}");
-                        clashResults.AppendLine($"    - Intersection Volume: {clashInfo.IntersectionVolume:F6} cubic units");
-                        clashResults.AppendLine($"    - Element 1 Overlap: {clashInfo.Element1VolumePercent:F2}% of its volume");
-                        clashResults.AppendLine($"    - Element 2 Overlap: {clashInfo.Element2VolumePercent:F2}% of its volume");
-                        if (clashInfo.ContactPoints.Any())
-                        {
-                            clashResults.AppendLine($"    - Intersection Center: ({clashInfo.ContactPoints[0].X:F3}, {clashInfo.ContactPoints[0].Y:F3}, {clashInfo.ContactPoints[0].Z:F3})");
-                        }
-                        clashResults.AppendLine();
-                    }
+                    clashResults.AppendLine($"    - Intersection Center: ({clash.ContactPoints[0].X:F3}, {clash.ContactPoints[0].Y:F3}, {clash.ContactPoints[0].Z:F3})");
+                }
+                clashResults.AppendLine();
+            }
+            
+            // Display clearance warnings
+            if (clearanceCount > 0)
+            {
+                clashResults.AppendLine("=== CLEARANCE WARNINGS (NEAR MISSES) ===");
+                foreach (var clearance in clearances.OrderBy(c => c.MinimumDistance))
+                {
+                    var clearanceNum = clearances.IndexOf(clearance) + 1;
+                    clashResults.AppendLine($"CLEARANCE WARNING #{clearanceNum}:");
+                    clashResults.AppendLine($"  Element 1: {clearance.Element1Name} (ID: {clearance.Element1Id})");
+                    clashResults.AppendLine($"  Element 2: {clearance.Element2Name} (ID: {clearance.Element2Id})");
+                    clashResults.AppendLine($"  Minimum Distance: {clearance.MinimumDistance:F3} units");
+                    clashResults.AppendLine($"  Risk Level: {clearance.RiskLevel}");
+                    clashResults.AppendLine();
                 }
             }
 
+            // Summary
             if (clashCount == 0)
             {
                 clashResults.AppendLine("✅ No clashes detected between the analyzed elements.");
             }
             else
             {
-                clashResults.AppendLine($"⚠️  Found {clashCount} clashes out of {totalPairs} element pairs checked.");
+                clashResults.AppendLine($"⚠️  Found {clashCount} clashes using optimized spatial detection.");
             }
+            
+            if (clearanceCount > 0)
+            {
+                clashResults.AppendLine($"⚠️  Found {clearanceCount} clearance warnings (elements too close).");
+            }
+            
+            // Performance metrics
+            performanceMetrics.AppendLine("=== PERFORMANCE METRICS ===");
+            performanceMetrics.AppendLine($"Geometry Processing Time: {geometryProcessingTime} ms");
+            performanceMetrics.AppendLine($"Spatial Indexing Time: {indexingTime} ms");
+            performanceMetrics.AppendLine($"Collision Detection Time: {detectionTime} ms");
+            performanceMetrics.AppendLine($"Total Processing Time: {stopwatch.ElapsedMilliseconds} ms");
+            performanceMetrics.AppendLine($"Elements/Second: {(elementCollisionData.Count * 1000.0 / Math.Max(stopwatch.ElapsedMilliseconds, 1)):F2}");
 
             // No cleanup needed for managed clash detection analysis
         }
@@ -454,19 +489,20 @@ public static class AECDMTools
         }
 
         var finalResult = new StringBuilder();
-        finalResult.AppendLine("=== CLASH DETECTION ANALYSIS COMPLETED ===");
+        finalResult.AppendLine("=== ENHANCED CLASH DETECTION ANALYSIS COMPLETED ===");
         finalResult.AppendLine();
         finalResult.AppendLine("ELEMENT GEOMETRY SUMMARY:");
         finalResult.AppendLine(meshSummary.ToString());
         finalResult.AppendLine(clashResults.ToString());
+        finalResult.AppendLine(performanceMetrics.ToString());
         
         return finalResult.ToString();
     }
 
     /// <summary>
-    /// Creates a bounding box from an Autodesk mesh for clash detection analysis
+    /// Creates an enhanced bounding box from an Autodesk mesh for clash detection analysis
     /// </summary>
-    private static ElementBoundingBox? CreateBoundingBoxFromMesh(dynamic mesh)
+    private static ElementBoundingBox? CreateEnhancedBoundingBoxFromMesh(dynamic mesh)
     {
         try
         {
@@ -530,73 +566,209 @@ public static class AECDMTools
     }
 
     /// <summary>
-    /// Detects clashes between two elements using bounding box overlap analysis
+    /// Calculates adaptive tolerance based on element size
     /// </summary>
-    private static ClashInfo? DetectBoundingBoxClash(ElementBoundingBox element1, ElementBoundingBox element2, double threshold)
+    private static float CalculateAdaptiveTolerance(ElementBoundingBox element)
+    {
+        var maxDimension = Math.Max(element.MaxX - element.MinX, 
+                                  Math.Max(element.MaxY - element.MinY, element.MaxZ - element.MinZ));
+        // Use 0.1% of the largest dimension as tolerance, with minimum and maximum bounds
+        return (float)Math.Max(0.001, Math.Min(0.1, maxDimension * 0.001));
+    }
+
+    /// <summary>
+    /// Performs enhanced clash detection with spatial optimization and parallel processing
+    /// </summary>
+    private static async Task<(List<EnhancedClashInfo> clashes, List<ClearanceInfo> clearances, long detectionTime)> 
+        PerformEnhancedClashDetection(List<ElementBoundingBox> elements, SpatialIndex spatialIndex, 
+        double clashThreshold, double clearanceThreshold, bool enableParallel)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var clashes = new ConcurrentBag<EnhancedClashInfo>();
+        var clearances = new ConcurrentBag<ClearanceInfo>();
+
+        if (enableParallel)
+        {
+            await Task.Run(() =>
+            {
+                Parallel.For(0, elements.Count, i =>
+                {
+                    var element1 = elements[i];
+                    var candidates = spatialIndex.GetNearbyElements(element1);
+                    
+                    foreach (var element2 in candidates.Where(e => string.Compare(e.ElementId, element1.ElementId, StringComparison.Ordinal) > 0))
+                    {
+                        var result = AnalyzeElementPair(element1, element2, clashThreshold, clearanceThreshold);
+                        if (result.clash != null) clashes.Add(result.clash);
+                        if (result.clearance != null) clearances.Add(result.clearance);
+                    }
+                });
+            });
+        }
+        else
+        {
+            for (int i = 0; i < elements.Count; i++)
+            {
+                var element1 = elements[i];
+                var candidates = spatialIndex.GetNearbyElements(element1);
+                
+                foreach (var element2 in candidates.Where(e => string.Compare(e.ElementId, element1.ElementId, StringComparison.Ordinal) > 0))
+                {
+                    var result = AnalyzeElementPair(element1, element2, clashThreshold, clearanceThreshold);
+                    if (result.clash != null) clashes.Add(result.clash);
+                    if (result.clearance != null) clearances.Add(result.clearance);
+                }
+            }
+        }
+
+        return (clashes.ToList(), clearances.ToList(), stopwatch.ElapsedMilliseconds);
+    }
+
+    /// <summary>
+    /// Analyzes a pair of elements for clashes and clearance issues
+    /// </summary>
+    private static (EnhancedClashInfo? clash, ClearanceInfo? clearance) AnalyzeElementPair(
+        ElementBoundingBox element1, ElementBoundingBox element2, double clashThreshold, double clearanceThreshold)
     {
         try
         {
-            // Define a small tolerance to avoid floating point precision issues and touching detection
-            const float tolerance = 0.001f;
+            // Use adaptive tolerance for more accurate detection
+            var tolerance = Math.Max(element1.AdaptiveTolerance, element2.AdaptiveTolerance);
             
-            // Check for AABB (Axis-Aligned Bounding Box) ACTUAL overlap (not just touching)
-            // For true overlap, one box's max must be greater than the other's min by more than tolerance
+            // Check for AABB overlap with adaptive tolerance
             bool overlapsX = (element1.MaxX - tolerance) > element2.MinX && (element2.MaxX - tolerance) > element1.MinX;
             bool overlapsY = (element1.MaxY - tolerance) > element2.MinY && (element2.MaxY - tolerance) > element1.MinY;
             bool overlapsZ = (element1.MaxZ - tolerance) > element2.MinZ && (element2.MaxZ - tolerance) > element1.MinZ;
             
             if (overlapsX && overlapsY && overlapsZ)
             {
-                // Calculate intersection volume (only if there's actual overlap)
+                // Calculate intersection details
                 float intersectionX = Math.Min(element1.MaxX, element2.MaxX) - Math.Max(element1.MinX, element2.MinX);
                 float intersectionY = Math.Min(element1.MaxY, element2.MaxY) - Math.Max(element1.MinY, element2.MinY);
                 float intersectionZ = Math.Min(element1.MaxZ, element2.MaxZ) - Math.Max(element1.MinZ, element2.MinZ);
                 
-                // Ensure all intersection dimensions are positive (actual overlap)
                 if (intersectionX > tolerance && intersectionY > tolerance && intersectionZ > tolerance)
                 {
                     double intersectionVolume = intersectionX * intersectionY * intersectionZ;
                     
-                    if (intersectionVolume >= threshold)
+                    if (intersectionVolume >= clashThreshold)
                     {
-                        // Calculate center point of intersection
                         var centerX = (Math.Max(element1.MinX, element2.MinX) + Math.Min(element1.MaxX, element2.MaxX)) / 2;
                         var centerY = (Math.Max(element1.MinY, element2.MinY) + Math.Min(element1.MaxY, element2.MaxY)) / 2;
                         var centerZ = (Math.Max(element1.MinZ, element2.MinZ) + Math.Min(element1.MaxZ, element2.MaxZ)) / 2;
                         
-                        // Calculate percentage of each element's volume that's intersecting
                         double element1VolPercent = (intersectionVolume / element1.Volume) * 100;
                         double element2VolPercent = (intersectionVolume / element2.Volume) * 100;
                         
-                        return new ClashInfo
+                        var clash = new EnhancedClashInfo
                         {
-                            ClashType = intersectionVolume > 0.1 ? "Major Intersection" : "Minor Overlap",
+                            Element1Id = element1.ElementId,
+                            Element1Name = element1.ElementName,
+                            Element2Id = element2.ElementId,
+                            Element2Name = element2.ElementName,
+                            ClashType = ClassifyClashType(intersectionVolume, element1VolPercent, element2VolPercent),
+                            Severity = ClassifyClashSeverity(intersectionVolume, element1VolPercent, element2VolPercent),
                             IntersectionVolume = intersectionVolume,
-                            ContactPoints = new List<Vector3> 
-                            { 
-                                new Vector3(centerX, centerY, centerZ) 
-                            },
+                            ContactPoints = new List<Vector3> { new Vector3(centerX, centerY, centerZ) },
                             Element1VolumePercent = element1VolPercent,
                             Element2VolumePercent = element2VolPercent
                         };
+                        
+                        return (clash, null);
                     }
                 }
             }
-
-            return null;
+            
+            // Check for clearance issues (near misses)
+            var minDistance = CalculateMinimumDistance(element1, element2);
+            if (minDistance <= clearanceThreshold && minDistance > 0)
+            {
+                var clearance = new ClearanceInfo
+                {
+                    Element1Id = element1.ElementId,
+                    Element1Name = element1.ElementName,
+                    Element2Id = element2.ElementId,
+                    Element2Name = element2.ElementName,
+                    MinimumDistance = minDistance,
+                    RiskLevel = ClassifyRiskLevel(minDistance, clearanceThreshold)
+                };
+                
+                return (null, clearance);
+            }
+            
+            return (null, null);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error detecting clash: {ex.Message}");
-            return null;
+            Console.WriteLine($"Error analyzing element pair: {ex.Message}");
+            return (null, null);
         }
+    }
+
+    /// <summary>
+    /// Calculates minimum distance between two bounding boxes
+    /// </summary>
+    private static double CalculateMinimumDistance(ElementBoundingBox box1, ElementBoundingBox box2)
+    {
+        var dx = Math.Max(0, Math.Max(box1.MinX - box2.MaxX, box2.MinX - box1.MaxX));
+        var dy = Math.Max(0, Math.Max(box1.MinY - box2.MaxY, box2.MinY - box1.MaxY));
+        var dz = Math.Max(0, Math.Max(box1.MinZ - box2.MaxZ, box2.MinZ - box1.MaxZ));
+        
+        return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /// <summary>
+    /// Classifies clash type based on intersection characteristics
+    /// </summary>
+    private static string ClassifyClashType(double intersectionVolume, double vol1Percent, double vol2Percent)
+    {
+        if (Math.Max(vol1Percent, vol2Percent) > 50)
+            return "Major Penetration";
+        else if (intersectionVolume > 1.0)
+            return "Significant Overlap";
+        else if (intersectionVolume > 0.1)
+            return "Moderate Intersection";
+        else
+            return "Minor Overlap";
+    }
+
+    /// <summary>
+    /// Classifies clash severity
+    /// </summary>
+    private static string ClassifyClashSeverity(double intersectionVolume, double vol1Percent, double vol2Percent)
+    {
+        var maxPercent = Math.Max(vol1Percent, vol2Percent);
+        
+        if (maxPercent > 75 || intersectionVolume > 10)
+            return "CRITICAL";
+        else if (maxPercent > 25 || intersectionVolume > 1)
+            return "HIGH";
+        else if (maxPercent > 5 || intersectionVolume > 0.1)
+            return "MEDIUM";
+        else
+            return "LOW";
+    }
+
+    /// <summary>
+    /// Classifies risk level for clearance issues
+    /// </summary>
+    private static string ClassifyRiskLevel(double distance, double threshold)
+    {
+        var ratio = distance / threshold;
+        
+        if (ratio < 0.2)
+            return "HIGH RISK";
+        else if (ratio < 0.5)
+            return "MEDIUM RISK";
+        else
+            return "LOW RISK";
     }
 
 
 }
 
 /// <summary>
-/// Represents a bounding box for an element used in clash detection analysis
+/// Represents an enhanced bounding box for an element used in clash detection analysis
 /// </summary>
 internal class ElementBoundingBox
 {
@@ -608,10 +780,23 @@ internal class ElementBoundingBox
     public float MaxX { get; set; }
     public float MaxY { get; set; }
     public float MaxZ { get; set; }
+    public float AdaptiveTolerance { get; set; } = 0.001f;
 
     public double Volume => Math.Abs((MaxX - MinX) * (MaxY - MinY) * (MaxZ - MinZ));
     
     public Vector3 Center => new Vector3((MinX + MaxX) / 2, (MinY + MaxY) / 2, (MinZ + MaxZ) / 2);
+    
+    public double MaxDimension => Math.Max(MaxX - MinX, Math.Max(MaxY - MinY, MaxZ - MinZ));
+    
+    /// <summary>
+    /// Checks if this bounding box overlaps with another bounding box
+    /// </summary>
+    public bool OverlapsWith(ElementBoundingBox other, float tolerance = 0.001f)
+    {
+        return (MaxX - tolerance) > other.MinX && (other.MaxX - tolerance) > MinX &&
+               (MaxY - tolerance) > other.MinY && (other.MaxY - tolerance) > MinY &&
+               (MaxZ - tolerance) > other.MinZ && (other.MaxZ - tolerance) > MinZ;
+    }
 }
 
 /// <summary>
@@ -624,6 +809,151 @@ internal class ClashInfo
     public List<Vector3> ContactPoints { get; set; } = new List<Vector3>();
     public double Element1VolumePercent { get; set; }
     public double Element2VolumePercent { get; set; }
+}
+
+/// <summary>
+/// Enhanced clash information with additional classification and metadata
+/// </summary>
+internal class EnhancedClashInfo
+{
+    public string Element1Id { get; set; } = string.Empty;
+    public string Element1Name { get; set; } = string.Empty;
+    public string Element2Id { get; set; } = string.Empty;
+    public string Element2Name { get; set; } = string.Empty;
+    public string ClashType { get; set; } = string.Empty;
+    public string Severity { get; set; } = string.Empty;
+    public double IntersectionVolume { get; set; }
+    public List<Vector3> ContactPoints { get; set; } = new List<Vector3>();
+    public double Element1VolumePercent { get; set; }
+    public double Element2VolumePercent { get; set; }
+}
+
+/// <summary>
+/// Information about clearance issues (near misses)
+/// </summary>
+internal class ClearanceInfo
+{
+    public string Element1Id { get; set; } = string.Empty;
+    public string Element1Name { get; set; } = string.Empty;
+    public string Element2Id { get; set; } = string.Empty;
+    public string Element2Name { get; set; } = string.Empty;
+    public double MinimumDistance { get; set; }
+    public string RiskLevel { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Spatial index for optimized collision detection using grid-based partitioning
+/// </summary>
+internal class SpatialIndex
+{
+    private readonly Dictionary<string, List<ElementBoundingBox>> _spatialGrid;
+    private readonly float _cellSize;
+    private readonly float _minX, _minY, _minZ;
+    private readonly int _gridSizeX, _gridSizeY, _gridSizeZ;
+
+    public SpatialIndex(List<ElementBoundingBox> elements, float cellSize = 10.0f)
+    {
+        _cellSize = cellSize;
+        _spatialGrid = new Dictionary<string, List<ElementBoundingBox>>();
+
+        if (elements.Count == 0) return;
+
+        // Calculate bounding box of all elements
+        _minX = elements.Min(e => e.MinX);
+        _minY = elements.Min(e => e.MinY);
+        _minZ = elements.Min(e => e.MinZ);
+        var maxX = elements.Max(e => e.MaxX);
+        var maxY = elements.Max(e => e.MaxY);
+        var maxZ = elements.Max(e => e.MaxZ);
+
+        // Calculate grid dimensions
+        _gridSizeX = (int)Math.Ceiling((maxX - _minX) / _cellSize) + 1;
+        _gridSizeY = (int)Math.Ceiling((maxY - _minY) / _cellSize) + 1;
+        _gridSizeZ = (int)Math.Ceiling((maxZ - _minZ) / _cellSize) + 1;
+
+        // Populate spatial grid
+        foreach (var element in elements)
+        {
+            var cells = GetCellsForElement(element);
+            foreach (var cell in cells)
+            {
+                if (!_spatialGrid.ContainsKey(cell))
+                    _spatialGrid[cell] = new List<ElementBoundingBox>();
+                _spatialGrid[cell].Add(element);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets nearby elements that could potentially clash with the given element
+    /// </summary>
+    public List<ElementBoundingBox> GetNearbyElements(ElementBoundingBox element)
+    {
+        var nearbyElements = new HashSet<ElementBoundingBox>();
+        var cells = GetCellsForElement(element);
+
+        foreach (var cell in cells)
+        {
+            if (_spatialGrid.ContainsKey(cell))
+            {
+                foreach (var candidate in _spatialGrid[cell])
+                {
+                    if (candidate.ElementId != element.ElementId)
+                        nearbyElements.Add(candidate);
+                }
+            }
+        }
+
+        return nearbyElements.ToList();
+    }
+
+    /// <summary>
+    /// Gets all grid cells that an element spans
+    /// </summary>
+    private List<string> GetCellsForElement(ElementBoundingBox element)
+    {
+        var cells = new List<string>();
+
+        var minCellX = (int)((element.MinX - _minX) / _cellSize);
+        var maxCellX = (int)((element.MaxX - _minX) / _cellSize);
+        var minCellY = (int)((element.MinY - _minY) / _cellSize);
+        var maxCellY = (int)((element.MaxY - _minY) / _cellSize);
+        var minCellZ = (int)((element.MinZ - _minZ) / _cellSize);
+        var maxCellZ = (int)((element.MaxZ - _minZ) / _cellSize);
+
+        // Clamp to grid bounds
+        minCellX = Math.Max(0, Math.Min(minCellX, _gridSizeX - 1));
+        maxCellX = Math.Max(0, Math.Min(maxCellX, _gridSizeX - 1));
+        minCellY = Math.Max(0, Math.Min(minCellY, _gridSizeY - 1));
+        maxCellY = Math.Max(0, Math.Min(maxCellY, _gridSizeY - 1));
+        minCellZ = Math.Max(0, Math.Min(minCellZ, _gridSizeZ - 1));
+        maxCellZ = Math.Max(0, Math.Min(maxCellZ, _gridSizeZ - 1));
+
+        for (int x = minCellX; x <= maxCellX; x++)
+        {
+            for (int y = minCellY; y <= maxCellY; y++)
+            {
+                for (int z = minCellZ; z <= maxCellZ; z++)
+                {
+                    cells.Add($"{x},{y},{z}");
+                }
+            }
+        }
+
+        return cells;
+    }
+
+    /// <summary>
+    /// Gets statistics about the spatial index
+    /// </summary>
+    public (int totalCells, int occupiedCells, double averageElementsPerCell) GetStatistics()
+    {
+        var totalCells = _gridSizeX * _gridSizeY * _gridSizeZ;
+        var occupiedCells = _spatialGrid.Count;
+        var averageElementsPerCell = occupiedCells > 0 ? _spatialGrid.Values.Sum(list => list.Count) / (double)occupiedCells : 0;
+
+        return (totalCells, occupiedCells, averageElementsPerCell);
+    }
 }
 
 

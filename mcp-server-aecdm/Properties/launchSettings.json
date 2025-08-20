@@ -3,11 +3,9 @@
     "mcp-server-aecdm": {
       "commandName": "Project",
       "environmentVariables": {
-        "CLIENT_ID": "Your Staging App Client ID",
-        "CLIENT_SECRET": "Your Staging App Client Secret",
-        "CALLBACK_URL": "http://localhost:8080/api/auth/callback/",
-        
-
+        "CLIENT_ID": "tCpw5GW41GZ832527vQIYFQuSeVAtPRu",
+        "CLIENT_SECRET": "skCwcQ6euiZwMdjG",
+        "CALLBACK_URL": "http://localhost:8080/"
       }
     }
   }
