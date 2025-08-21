@@ -3,8 +3,8 @@
     "mcp-server-aecdm": {
       "commandName": "Project",
       "environmentVariables": {
-        "CLIENT_ID": "tCpw5GW41GZ832527vQIYFQuSeVAtPRu",
-        "CLIENT_SECRET": "skCwcQ6euiZwMdjG",
+        "CLIENT_ID": "",
+        "CLIENT_SECRET": "",
         "CALLBACK_URL": "http://localhost:8080/"
       }
     }
