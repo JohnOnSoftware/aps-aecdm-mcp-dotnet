@@ -31,10 +31,8 @@ namespace mcp_server_aecdm
 		[McpServerTool, Description("Render one model with Autodesk Viewer.")]
 		public static async Task<string> RenderModel([Description("urn used to render the model with Viewer")] string fileVersionUrn)
 		{
-			//workaround for the wrong version urn.
-			fileVersionUrn = fileVersionUrn.Replace("dm.lineage:", "fs.file:vf.");
 
-            //return an html page as string
+			//return an html page as string
             string htmlContent = @"
 <!DOCTYPE html>
 <html>
@@ -71,6 +69,10 @@ namespace mcp_server_aecdm
       }, console.log)
   };
 
+  function onLoadFinished() {
+    console.log('Model loaded successfully');
+  }
+
   async function initAPSViewer() {
     const options = {
       env: 'AutodeskStaging2',
@@ -98,46 +100,125 @@ namespace mcp_server_aecdm
 
 
 </html>";
-			// Start a simple HTTP server
-			HttpListener listener = new HttpListener();
-			listener.Prefixes.Add("http://localhost:8080/");
-			listener.Start();
-
-			Task.Run(() =>
+			// Start a simple HTTP server with error handling
+			HttpListener listener = null;
+			HttpListener webSocketListener = null;
+			
+			try
 			{
-				while (true)
+				listener = new HttpListener();
+				listener.Prefixes.Add("http://localhost:8082/");
+				listener.Start();
+				
+				Task.Run(() =>
 				{
-					HttpListenerContext context = listener.GetContext();
-					HttpListenerResponse response = context.Response;
-					byte[] buffer = Encoding.UTF8.GetBytes(htmlContent);
-					response.ContentLength64 = buffer.Length;
-					response.OutputStream.Write(buffer, 0, buffer.Length);
-					response.OutputStream.Close();
-				}
-			});
-
-			// Start a WebSocket server
-			Task.Run(async () =>
+					try
+					{
+						while (listener.IsListening)
+						{
+							var context = listener.GetContext();
+							var response = context.Response;
+							byte[] buffer = Encoding.UTF8.GetBytes(htmlContent);
+							response.ContentLength64 = buffer.Length;
+							response.OutputStream.Write(buffer, 0, buffer.Length);
+							response.OutputStream.Close();
+						}
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine($"HTTP Server error: {ex.Message}");
+					}
+				});
+			}
+			catch (Exception ex)
 			{
-				HttpListener webSocketListener = new HttpListener();
+				return $"Failed to start HTTP server on port 8082: {ex.Message}. Port may be in use.";
+			}
+
+			// Start a WebSocket server with error handling
+			try
+			{
+				webSocketListener = new HttpListener();
 				webSocketListener.Prefixes.Add("http://localhost:8081/");
 				webSocketListener.Start();
 
-				while (true)
+				Task.Run(async () =>
 				{
-					HttpListenerContext context = await webSocketListener.GetContextAsync();
-					if (context.Request.IsWebSocketRequest)
+					try
 					{
-						HttpListenerWebSocketContext webSocketContext = await context.AcceptWebSocketAsync(null);
-						Global._webSocket = webSocketContext.WebSocket;
+						while (webSocketListener.IsListening)
+						{
+							var context = await webSocketListener.GetContextAsync();
+							if (context.Request.IsWebSocketRequest)
+							{
+								var webSocketContext = await context.AcceptWebSocketAsync(null);
+								Global._webSocket = webSocketContext.WebSocket;
+							}
+						}
 					}
-				}
-			});
+					catch (Exception ex)
+					{
+						Console.WriteLine($"WebSocket Server error: {ex.Message}");
+					}
+				});
+			}
+			catch (Exception ex)
+			{
+				listener?.Stop();
+				return $"Failed to start WebSocket server on port 8081: {ex.Message}. Port may be in use.";
+			}
 
-			// Open the default web browser
-			Process.Start(new ProcessStartInfo("http://localhost:8080/") { UseShellExecute = true });
-
-			return "Viewer has been initialized in the browser!";
+			// Try multiple methods to open the browser
+			string url = "http://localhost:8082/";
+			try
+			{
+                // Method 1: Try with UseShellExecute = true
+                var psi = new ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+                return "Viewer has been initialized and browser opened successfully!";
+            }
+			catch (Exception ex1)
+			{
+                try
+                {
+                    // Method 2: Try with cmd /c start
+                    var psi2 = new ProcessStartInfo
+                    {
+                        FileName = "cmd",
+                        Arguments = $"/c start {url}",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    Process.Start(psi2);
+                    return "Viewer has been initialized and browser opened via cmd!";
+                }
+                catch (Exception ex2)
+                {
+                    try
+                    {
+                        // Method 3: Try direct browser executable
+                        var psi3 = new ProcessStartInfo
+                        {
+                            FileName = "explorer.exe",
+                            Arguments = url,
+                            UseShellExecute = false
+                        };
+                        Process.Start(psi3);
+                        return "Viewer has been initialized and browser opened via explorer!";
+                    }
+                    catch (Exception ex3)
+                    {
+                        // All methods failed, return detailed error info
+                        return $"Viewer server started on {url} but failed to open browser automatically. " +
+                               $"Please open your browser manually and navigate to {url}. " +
+                               $"Errors: Method1: {ex1.Message}, Method2: {ex2.Message}, Method3: {ex3.Message}";
+                    }
+                }
+            }
 		}
 	}
 }
