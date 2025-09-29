@@ -121,7 +121,7 @@ if (httpMode)
                                     type = "object",
                                     properties = new
                                     {
-                                        hubId = new { type = "string", description = "The hub ID" }
+                                        hubId = new { type = "string", description = "The hub ID, do not use dataManagementAPIHubId " }
                                     },
                                     required = new[] { "hubId" }
                                 }
@@ -357,7 +357,7 @@ if (httpMode)
 
     app.MapGet("/mcp/health", () => Results.Json(new { status = "healthy", timestamp = DateTime.UtcNow }));
 
-    Console.WriteLine("MCP Server running in HTTP mode on http://127.0.0.1:4000/mcp/");
+    //Console.WriteLine("MCP Server running in HTTP mode on http://127.0.0.1:4000/mcp/");
     await app.RunAsync();
 }
 else
@@ -371,7 +371,7 @@ else
 
     var app = builder.Build();
 
-    Console.WriteLine("MCP Server running in STDIO mode");
+    //Console.WriteLine("MCP Server running in STDIO mode");
     await app.RunAsync();
 }
 
