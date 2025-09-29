@@ -36,7 +36,7 @@ public static class DMTools
             if (!File.Exists(localFilePath))
                 throw new FileNotFoundException($"File not found: {localFilePath}");
 
-            IApsConfiguration apsConfiguration = new ApsConfiguration(AdskEnvironment.Stg);
+            IApsConfiguration apsConfiguration = new ApsConfiguration(AdskEnvironment.Prd);
             var sdkManager = SdkManagerBuilder.Create().Add(apsConfiguration).Build();
 
             StaticAuthenticationProvider staticAuthenticationProvider = new StaticAuthenticationProvider(Global.AccessToken);

@@ -22,7 +22,7 @@ namespace mcp_server_aecdm.Tools;
 [McpServerToolType]
 public static class AECDMTools
 {
-    private const string BASE_URL = "https://developer-stg.api.autodesk.com/aec/graphql";
+    private const string BASE_URL = "https://developer.api.autodesk.com/aec/beta/graphql";
 
 
     public static async Task<object> Query(GraphQL.GraphQLRequest query, string? regionHeader = null)

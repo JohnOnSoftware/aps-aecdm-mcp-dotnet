@@ -7,7 +7,7 @@
 [![AEC-Data-Model](https://img.shields.io/badge/AEC%20Data%20Model-v1-green.svg)](http://developer.autodesk.com/)
 
 
-# aps-aecdm-extension-mcp-dotnet
+# aps-aecdm-mcp-dotnet
 .NET MCP Server to connect with Autodesk Assistant or Claude Desktop, AEC Data Model API including the Geometry feature(beta) and the Viewer.
 
 
@@ -44,7 +44,7 @@ The MCP server provides natural language access models from Autodesk Constructio
 
 - An APS account (free at [aps.autodesk.com](https://aps.autodesk.com))
 - An APS application with:
-  - **App Type**: Single Page Application (for PKCE authentication)
+  - **App Type**: Single Page Application is recommended(for PKCE authentication)
   - **Callback URL**: `http://localhost:8080/api/auth/callback/`
   - **APIs Enabled**: Data Management API, AEC Data Model API, Model Derivative API
 - Access to ACC (Autodesk Construction Cloud) projects
@@ -74,7 +74,7 @@ You need to configure your APS credentials as environment variables, or you can 
     "mcp-server-aecdm": {
       "commandName": "Project",
       "environmentVariables": {
-        "CLIENT_ID": "your_aps_client_id",
+        "CLIENT_ID": "your_aps_pkce_client_id",
         "CALLBACK_URL": "http://localhost:8080/api/auth/callback/"
       }
     }
@@ -139,5 +139,5 @@ This sample is licensed under the terms of the [MIT License](LICENSE). Please se
 
 ## Author
 
-**João Martins** - [LinkedIn](https://linkedin.com/in/jpornelas)
-**Zhong Wu** - [LinkedIn](https://linkedin.com/in/johnonsoftware)
+- **João Martins** - [LinkedIn](https://linkedin.com/in/jpornelas)
+- **Zhong Wu** - [LinkedIn](https://linkedin.com/in/johnonsoftware)

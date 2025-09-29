@@ -23,15 +23,10 @@ public static class AuthTools
 
 	public static async Task GenerateAPSToken() {
 
-		Environment.SetEnvironmentVariable("DXSDKEnvironment", "stg");
-		var env1 = System.Environment.GetEnvironmentVariable("DXSDKEnvironment");
-
-		//TBD: The current SDK does not support PKCE, so we will use the default setup for now.
 		var sdkOptions = new SDKOptionsDefaultSetup
 		{
 			ConnectorName = "applicationName",
 			ClientId = Environment.GetEnvironmentVariable("CLIENT_ID"),
-			ClientSecret = Environment.GetEnvironmentVariable("CLIENT_SECRET"),
 			CallBack = Environment.GetEnvironmentVariable("CALLBACK_URL"),
 			HostApplicationName = "AECDMSampleApp",
 			HostApplicationVersion = "1.0.0",

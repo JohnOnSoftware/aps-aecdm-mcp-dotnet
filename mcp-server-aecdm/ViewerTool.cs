@@ -75,7 +75,7 @@ namespace mcp_server_aecdm
 
   async function initAPSViewer() {
     const options = {
-      env: 'AutodeskStaging2',
+      env: 'AutodeskProduction',
       accessToken: _access_token,
       isAEC: true
     };
