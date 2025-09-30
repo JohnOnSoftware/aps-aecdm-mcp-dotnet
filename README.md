@@ -48,7 +48,13 @@ The MCP server provides natural language access models from Autodesk Constructio
   - **Callback URL**: `http://localhost:8080/api/auth/callback/`
   - **APIs Enabled**: Data Management API, AEC Data Model API, Model Derivative API
 - Access to ACC (Autodesk Construction Cloud) projects
-- Access to Autodesk Assistant staging version
+
+### AEC Data Model Geometry(beta)
+- It's required to participate in the [AEC Data Model Public Beta Program](https://feedback.autodesk.com/) to access Geometry feature, follow the instructions, download the DataSDK, you can refer to the [aps-aecdm-data-sdk-code-sample
+](https://github.com/autodesk-platform-services/aps-aecdm-data-sdk-code-sample) if you are interested in the feature.
+
+### Autodesk Assistant
+- Get your access to Autodesk Assistant staging version
 
 ### Provisioning
 
